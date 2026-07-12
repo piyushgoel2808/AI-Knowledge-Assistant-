@@ -60,21 +60,55 @@ class GeminiProvider(BaseLLMProvider):
         if not api_key:
             raise ValueError("GEMINI_API_KEY is required for the Gemini provider")
 
-        import google.generativeai as genai
-
-        self._genai = genai
-        self._genai.configure(api_key=api_key)
+        self.api_key = api_key
         self.model = model
 
     def generate(self, prompt: str, system_prompt: str | None = None) -> LLMResponse:
-        generation_config: dict[str, Any] = {}
-        if system_prompt:
-            generation_config["system_instruction"] = system_prompt
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/{self.model}:generateContent"
 
-        model = self._genai.GenerativeModel(self.model, generation_config=generation_config or None)
-        response = model.generate_content(prompt)
-        text = getattr(response, "text", "") or ""
-        return LLMResponse(text=text.strip(), raw=response)
+        payload: dict[str, Any] = {
+            "contents": [
+                {
+                    "role": "user",
+                    "parts": [{"text": prompt}],
+                }
+            ]
+        }
+
+        if system_prompt:
+            payload["systemInstruction"] = {
+                "parts": [{"text": system_prompt}],
+            }
+
+        response = requests.post(
+            url,
+            headers={
+                "Content-Type": "application/json",
+                "X-goog-api-key": self.api_key,
+            },
+            json=payload,
+            timeout=120,
+        )
+        response.raise_for_status()
+        data = response.json()
+
+        return LLMResponse(text=self._extract_text(data).strip(), raw=data)
+
+    @staticmethod
+    def _extract_text(data: dict[str, Any]) -> str:
+        candidates = data.get("candidates") or []
+        if not candidates:
+            return ""
+
+        content = candidates[0].get("content") or {}
+        parts = content.get("parts") or []
+        text_parts: list[str] = []
+        for part in parts:
+            if isinstance(part, dict):
+                text = part.get("text")
+                if text:
+                    text_parts.append(str(text))
+        return "\n".join(text_parts)
 
 
 def create_llm_provider(config: AppConfig | None = None) -> BaseLLMProvider:

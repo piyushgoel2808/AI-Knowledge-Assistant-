@@ -45,6 +45,8 @@ def _render_sidebar(config) -> None:
         st.header("Documents")
         st.write(f"Stored chunks: {count_documents(config=config)}")
         st.write(f"Active provider: {config.llm_provider}")
+        if config.llm_provider == "gemini" and not config.gemini_api_key:
+            st.warning("Add GEMINI_API_KEY to .env before asking questions.")
 
         uploaded_files = st.file_uploader(
             "Upload documents",
@@ -118,12 +120,18 @@ def _render_chat_area(config) -> None:
 
         provider = create_llm_provider(config)
         history = [ChatMessage(role=item["role"], content=item["content"]) for item in st.session_state.chat_history[:-1]]
-        result = answer_question(
-            question=prompt,
-            chat_history=history,
-            config=config,
-            provider=provider,
-        )
+        try:
+            result = answer_question(
+                question=prompt,
+                chat_history=history,
+                config=config,
+                provider=provider,
+            )
+        except Exception as exc:
+            error_message = f"I could not generate a reply because of a provider error: {exc}"
+            st.error(error_message)
+            st.session_state.chat_history.append({"role": "assistant", "content": error_message, "sources": []})
+            return
 
         assistant_message = {
             "role": "assistant",
