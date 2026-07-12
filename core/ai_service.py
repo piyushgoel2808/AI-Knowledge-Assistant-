@@ -5,8 +5,8 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from typing import Any
-
 import requests
+from groq import Groq
 
 from core.config import AppConfig, load_config
 
@@ -59,56 +59,58 @@ class GeminiProvider(BaseLLMProvider):
     def __init__(self, api_key: str, model: str) -> None:
         if not api_key:
             raise ValueError("GEMINI_API_KEY is required for the Gemini provider")
-
         self.api_key = api_key
         self.model = model
 
     def generate(self, prompt: str, system_prompt: str | None = None) -> LLMResponse:
         url = f"https://generativelanguage.googleapis.com/v1beta/models/{self.model}:generateContent"
-
         payload: dict[str, Any] = {
-            "contents": [
-                {
-                    "role": "user",
-                    "parts": [{"text": prompt}],
-                }
-            ]
+            "contents": [{"role": "user", "parts": [{"text": prompt}]}]
         }
-
         if system_prompt:
-            payload["systemInstruction"] = {
-                "parts": [{"text": system_prompt}],
-            }
+            payload["systemInstruction"] = {"parts": [{"text": system_prompt}]}
 
         response = requests.post(
             url,
-            headers={
-                "Content-Type": "application/json",
-                "X-goog-api-key": self.api_key,
-            },
+            headers={"Content-Type": "application/json", "X-goog-api-key": self.api_key},
             json=payload,
             timeout=120,
         )
         response.raise_for_status()
         data = response.json()
-
         return LLMResponse(text=self._extract_text(data).strip(), raw=data)
 
     @staticmethod
     def _extract_text(data: dict[str, Any]) -> str:
         candidates = data.get("candidates") or []
-        if not candidates:
-            return ""
+        if not candidates: return ""
+        parts = candidates[0].get("content", {}).get("parts") or []
+        return "\n".join([str(p.get("text", "")) for p in parts if p.get("text")])
 
-        content = candidates[0].get("content") or {}
-        parts = content.get("parts") or []
-        text_parts: list[str] = []
-        for part in parts:
-            if isinstance(part, dict):
-                text = part.get("text")
-                if text:
-                    text_parts.append(str(text))
-        return "\n".join(text_parts)
+
+class GroqProvider(BaseLLMProvider):
+    """Use the Groq API for high-speed inference."""
+
+    def __init__(self, api_key: str, model: str) -> None:
+        if not api_key:
+            raise ValueError("GROQ_API_KEY is required for the Groq provider")
+        self.client = Groq(api_key=api_key)
+        self.model = model
+
+    def generate(self, prompt: str, system_prompt: str | None = None) -> LLMResponse:
+        messages = []
+        if system_prompt:
+            messages.append({"role": "system", "content": system_prompt})
+        messages.append({"role": "user", "content": prompt})
+        
+        chat_completion = self.client.chat.completions.create(
+            messages=messages,
+            model=self.model,
+        )
+        return LLMResponse(
+            text=chat_completion.choices[0].message.content or "", 
+            raw=chat_completion
+        )
 
 
 def create_llm_provider(config: AppConfig | None = None) -> BaseLLMProvider:
@@ -127,6 +129,12 @@ def create_llm_provider(config: AppConfig | None = None) -> BaseLLMProvider:
         return GeminiProvider(
             api_key=resolved_config.gemini_api_key,
             model=resolved_config.gemini_model,
+        )
+    
+    if provider_name == "groq":
+        return GroqProvider(
+            api_key=resolved_config.groq_api_key,
+            model=resolved_config.groq_model,
         )
 
     raise ValueError(f"Unsupported LLM provider: {resolved_config.llm_provider}")
