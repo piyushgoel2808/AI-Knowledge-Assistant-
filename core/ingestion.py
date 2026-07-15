@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
+import io
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable, Sequence
 
 import fitz
+import pytesseract
+from PIL import Image
 from docx import Document as DocxDocument
 from langchain_core.documents import Document
 from langchain_text_splitters import RecursiveCharacterTextSplitter
@@ -85,6 +88,16 @@ def _extract_pdf_chunks(path: Path) -> list[SourceChunk]:
     with fitz.open(path) as pdf:
         for page_number, page in enumerate(pdf, start=1):
             text = page.get_text("text").strip()
+            
+            # --- OCR FALLBACK LOGIC ---
+            # If standard text extraction returns nothing, the page is likely a scanned image
+            if not text:
+                pix = page.get_pixmap(matrix=fitz.Matrix(2, 2)) 
+                image_data = pix.tobytes("png")
+                
+                image = Image.open(io.BytesIO(image_data))
+                text = pytesseract.image_to_string(image).strip()
+
             if not text:
                 continue
 
@@ -124,6 +137,7 @@ def _extract_docx_chunks(path: Path) -> list[SourceChunk]:
             )
         paragraph_buffer = []
 
+    # --- PARAGRAPH EXTRACTION ---
     for paragraph in doc.paragraphs:
         text = paragraph.text.strip()
         if not text:
@@ -138,6 +152,29 @@ def _extract_docx_chunks(path: Path) -> list[SourceChunk]:
         paragraph_buffer.append(text)
 
     flush_buffer(current_section)
+
+    # --- TABLE EXTRACTION LOGIC ---
+    for i, table in enumerate(doc.tables):
+        table_lines = []
+        for row in table.rows:
+            row_data = [cell.text.replace('\n', ' ').strip() for cell in row.cells]
+            table_lines.append(" | ".join(row_data))
+        
+        if table_lines:
+            markdown_table = "\n".join(table_lines)
+            chunks.append(
+                SourceChunk(
+                    text=markdown_table,
+                    metadata={
+                        "source": path.name,
+                        "file_path": str(path),
+                        "page": None,
+                        "section": f"Table {i+1}",
+                        "source_type": "docx",
+                    },
+                )
+            )
+
     return chunks
 
 
